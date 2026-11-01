@@ -43,12 +43,32 @@ func Run(args []string) int {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `scope — network scope enforcement layer
 
-Usage:
-  scope run      --program <file> [--level N] [--journal PATH] [--dry-run] -- <cmd> [args...]
+Usage (auto mode — fetches scope from bug-bounty platforms automatically):
+  scope run <tool> <domain> [tool-args...]
+
+  Examples:
+    scope run nmap example.com
+    scope run subfinder example.com -silent
+    scope run nuclei example.com -t cves/
+    scope run curl example.com
+
+Usage (manual mode — supply policy file):
+  scope run --program <file> [--level N] [--journal PATH] [--dry-run] -- <cmd> [args...]
+  scope run --domain <host>  [--platform hackerone,bugcrowd] -- <cmd> [args...]
+
+Other commands:
   scope check    <url|host> [--program <file>] [--level N] [--json]
   scope policy   validate|show <file>
   scope verify-log <path>
   scope journal  tail [--n N] [--path PATH]
+
+Environment variables (API keys for platform lookup):
+  HACKERONE_API_USER   HackerOne username
+  HACKERONE_API_TOKEN  HackerOne API token
+  BUGCROWD_API_TOKEN   Bugcrowd API token
+  INTIGRITI_API_TOKEN  Intigriti API token
+  YESWEHACK_TOKEN      YesWeHack JWT token
+  SCOPE_PLATFORMS      Comma-separated filter: hackerone,bugcrowd,intigriti,yeswehack
 
 Exit codes:
   0  success / allowed

@@ -1,181 +1,188 @@
 # scope
 
-> Network scope enforcement layer for security testing.  
-> Enforces a bug-bounty policy between your tool and the network.
+> **Network scope enforcement layer for authorized security testing.**  
+> Sits between your tool and the network — every outbound connection is checked against a policy before it leaves.
 
-**Authorised use only. This tool enforces a policy you supplied; it does not verify your authorisation.**
-
----
-
-## What it does
-
-scope sits between any security tool and the network. For every outbound
-packet it decides: **allowed** or **denied**, according to a policy file you
-supply. Every decision is recorded in a signed, append-only evidence journal.
-
-```
-your tool  →  scope (L7 proxy / L3 DNS)  →  target
-                     ↓
-              evidence journal (JSONL + Ed25519)
-```
-
-## What it does NOT do
-
-| ❌ Will not | Reason |
-|------------|--------|
-| Discover scope automatically | It enforces policy, not produces it |
-| Scan targets itself | It is not a scanner |
-| Modify passing requests | That would break tool trust |
-| Allow on doubt | Fail-closed always |
-| Require root/admin | M2 runs as a normal user |
-| Store platform credentials | You export the YAML |
-
-See [docs/limits.md](docs/limits.md) for a full list of known limits.
+[![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-blue)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
-## Quick start
+## Quick Start — Auto Mode
 
 ```bash
-# 1. Validate your policy
-scope policy validate testdata/policy_valid.yaml
+# Automatically fetch scope from all bug-bounty platforms, then run the tool
+scope run nmap example.com
+scope run subfinder example.com -silent
+scope run nuclei example.com -t cves/
+scope run httpx example.com -status-code
+scope run curl example.com
+```
 
-# 2. Dry-run: see decisions without executing
-scope run --program testdata/policy_valid.yaml --level 1 --dry-run -- curl https://api.example.com
+`scope` searches **HackerOne, Bugcrowd, Intigriti, and YesWeHack** for programs
+that include `example.com`, merges the scope, starts an enforcement proxy, then
+executes the tool with `HTTP_PROXY` injected automatically.
 
-# 3. Real run: proxy all traffic through scope
-scope run --program testdata/policy_valid.yaml --level 1 -- nmap -sV api.example.com
+If the domain is **not found** in any program → the tool is **blocked** (fail-closed).
 
-# 4. Check a single target
-scope check https://api.example.com --program testdata/policy_valid.yaml
+---
 
-# 5. Verify the evidence journal
-scope verify-log .scope/runs/2026-11-01T12-00-00Z.jsonl
+## Manual Mode — Supply Your Own Policy
+
+```bash
+# Validate a policy file
+scope policy validate my_policy.yaml
+
+# Check a single URL against a policy
+scope check https://api.example.com --program my_policy.yaml
+
+# Run a tool under policy enforcement
+scope run --program my_policy.yaml --level 2 -- nmap -sV api.example.com
+
+# Dry-run (print decisions, don't execute)
+scope run --program my_policy.yaml --dry-run -- curl https://api.example.com
 ```
 
 ---
 
-## Policy file format
+## Installation
+
+```bash
+git clone https://github.com/vulnquest58/scope
+cd scope
+go build -o scope ./cmd/scope
+# Optional: move to PATH
+mv scope /usr/local/bin/
+```
+
+**Requirements:** Go 1.22+
+
+---
+
+## Policy File Format
 
 ```yaml
-program: "ACME Bug Bounty"           # Required
-fetched: "2026-01-01T00:00:00Z"      # Required — when the policy was exported
-expires: "2027-01-01T00:00:00Z"      # Required — must be after fetched
+program: "ACME Corp Bug Bounty"
+fetched: "2026-01-01T00:00:00Z"
+expires: "2027-01-01T00:00:00Z"
 
 levels:
-  max: 2                             # 0..3 — max test intensity
+  max: 2           # 0=low 1=medium 2=high 3=critical
 
-windows:
+windows:           # Optional: restrict testing hours
   - days: ["mon", "tue", "wed", "thu", "fri"]
     hours: ["09:00-18:00"]
-    timezone: "UTC"
+    timezone: "Europe/London"
 
 rate:
-  per_host_rps: 5.0                  # 0 = unlimited
-  global_rps: 20.0
+  per_host_rps: 5
+  global_rps: 20
   burst: 10
 
 allow:
   - "*.example.com"
+  - "api.example.com"
   - "203.0.113.0/24"
 
 deny:
-  - reason: "Admin panel out of scope"
-    match: ["admin.example.com"]
+  - reason: "production payment endpoint"
+    match: ["pay.example.com"]
+  - reason: "out-of-scope third-party"
+    match: ["cdn.cloudflare.com"]
 ```
-
-See `testdata/policy_valid.yaml` for a working example.
 
 ---
 
-## CLI reference
+## Environment Variables
 
-| Command | Description |
-|---------|-------------|
-| `scope run --program <file> [--level N] [--dry-run] -- <cmd>` | Run a command under scope enforcement |
-| `scope check <host\|url> --program <file>` | Evaluate a single target |
-| `scope policy validate <file>` | Validate a policy file |
-| `scope policy show <file>` | Print parsed policy |
-| `scope verify-log <path>` | Verify journal integrity |
-| `scope journal tail --path <path>` | Print last 20 journal entries |
+| Variable | Description |
+|---|---|
+| `HACKERONE_API_USER` | HackerOne username |
+| `HACKERONE_API_TOKEN` | HackerOne API token |
+| `BUGCROWD_API_TOKEN` | Bugcrowd API token |
+| `INTIGRITI_API_TOKEN` | Intigriti API token |
+| `YESWEHACK_TOKEN` | YesWeHack JWT token |
+| `SCOPE_PLATFORMS` | Comma-separated filter: `hackerone,bugcrowd,intigriti,yeswehack` |
 
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Command succeeded / target allowed |
-| 1 | Command failed / target denied |
-| 2 | Usage error |
-| 3 | Policy or journal load failed |
-| 4 | Enforcement layer failed to start |
+Without API keys, only **public programs** are searched.
 
 ---
 
 ## Architecture
 
 ```
-cmd/scope/main.go          Entry point
-internal/policy/           Policy model, validation, matching (wildcard/CIDR/provider)
-internal/decide/           Decision engine — 16-step ordered algorithm
-internal/enforce/          L7 proxy (HTTP/HTTPS), L3 DNS resolver, command runner
-internal/log/              Append-only signed JSONL journal (Ed25519)
-internal/cli/              Subcommand handlers
+scope run <tool> <domain>
+     │
+     ├─ platform.Resolver → searches 4 platforms concurrently
+     │                       → merges scope into Policy
+     │
+     ├─ decide.Engine     → evaluates every connection:
+     │                       1. Policy loaded?
+     │                       2. Policy not expired?
+     │                       3. Within time window?
+     │                       4. Not rate-limited?
+     │                       5. Not explicit deny?
+     │                       6. Not third-party CDN?
+     │                       7. Matches allow list?
+     │
+     ├─ enforce.Proxy     → L7 HTTP/HTTPS proxy (CONNECT support)
+     │
+     ├─ log.Journal       → append-only JSONL log, Ed25519-signed,
+     │                       SHA-256 chain per entry
+     │
+     └─ enforce.Runner    → executes tool with HTTP_PROXY injected
 ```
 
-### Decision algorithm (ordered)
+---
 
-1. Policy not loaded → `policy-missing`
-2. Validation failed → `policy-invalid`
-3. `now > expires` → `policy-expired`
-4. `now < fetched` → `policy-expired` (clock skew)
-5. Outside time window → `outside-window`
-6. Rate limit exceeded → `rate-limited`
-7. `level > levels.max` → `level-too-high`
-8. DNS resolution fails → `unresolvable`
-9. `denyExact` match → `explicit-deny`
-10. `denyWild` match → `explicit-deny`
-11. `denyNets` match → `explicit-deny`
-12. CNAME → third-party, no explicit exception → `third-party-host`
-13. `allowExact` match → ✅ allow
-14. `allowWild` match → ✅ allow
-15. `allowNets` match → ✅ allow
-16. No match → `outside-wildcard`
+## Exit Codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success / allowed |
+| 1 | Command failed / denied |
+| 2 | Usage error |
+| 3 | Policy or log load failed |
+| 4 | Enforcement layer failed |
 
 ---
 
-## Security design
+## Commands Reference
 
-- **Fail-closed everywhere** — every error path denies
-- **Deny before allow** — explicit deny always checked first
-- **Signed journal** — Ed25519 per-entry signatures with SHA-256 hash chain
-- **No root required** — M2 runs as a normal user process
-- **No platform credentials stored** — you export YAML
+```
+scope run <tool> <domain> [tool-args...]          # auto platform lookup
+scope run --domain <host> -- <cmd>                # lookup by domain, run cmd
+scope run --program <file> -- <cmd>               # manual policy
+scope run --program <file> --dry-run -- <cmd>     # dry-run (no execution)
 
----
+scope check <url|host> --program <file>           # check single target
+scope check <url|host> --program <file> --json    # JSON output
 
-## Known limits
+scope policy validate <file>                      # validate policy YAML
+scope policy show <file>                          # show policy summary
 
-See [docs/limits.md](docs/limits.md).
-
-## Reason codes
-
-See [docs/reasons.md](docs/reasons.md).
-
----
-
-## Build & test
-
-```bash
-go build ./...
-go test -race ./...
-go vet ./...
+scope journal tail --path <file> --n 20           # tail audit log
+scope verify-log <path>                           # verify log chain
 ```
 
-**Coverage targets:** `internal/decide` ≥ 95%, overall ≥ 85%.
+---
+
+## Security Properties
+
+- **Fail-closed:** Every error path → Deny. No silent pass-through.
+- **Deny before allow:** Explicit deny rules checked before allow list.
+- **Immutable log:** Each journal entry is signed with Ed25519 and chained with SHA-256.
+- **No root required:** Runs as a regular user via L7 proxy injection.
+- **No credential storage:** API keys via environment variables only.
+
+---
+
+## Disclaimer
+
+**Authorised use only.** This tool enforces a policy you supplied; it does not verify your authorisation. The operator is solely responsible for ensuring they have permission to test the targets in their policy.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
+MIT © 2026 vulnquest58
