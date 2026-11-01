@@ -1,0 +1,10 @@
+program: "Expired Policy — for testing only"
+fetched: "2020-01-01T00:00:00Z"
+expires: "2021-01-01T00:00:00Z"
+
+levels:
+  max: 1
+
+allow:
+  - "*.example.com"
+

@@ -1,0 +1,29 @@
+program: "Example Bug Bounty — ACME Corp"
+fetched: "2026-01-01T00:00:00Z"
+expires: "2027-01-01T00:00:00Z"
+
+levels:
+  max: 2
+
+windows:
+  - days: ["mon", "tue", "wed", "thu", "fri"]
+    hours: ["09:00-18:00"]
+    timezone: "UTC"
+
+rate:
+  per_host_rps: 5.0
+  global_rps: 20.0
+  burst: 10
+
+allow:
+  - "*.example.com"
+  - "api.example.com"
+  - "203.0.113.0/24"
+  - "status.example.com"   # explicit exception — CNAME to statuspage.io allowed
+
+deny:
+  - reason: "Admin panel is out of scope"
+    match: ["admin.example.com"]
+  - reason: "Staging environment — no testing"
+    match: ["staging.example.com", "dev.example.com"]
+
